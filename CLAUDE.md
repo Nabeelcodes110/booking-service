@@ -13,6 +13,8 @@ Plan: https://app.notion.com/p/3ed5e2ce419181939c34ce146469754b
 - RabbitMQ handles committed reservation/cancellation events through a transactional outbox. It does not decide who wins a seat and is not required for a reservation response. Do not return 202 for booking or send booking requests through a queue.
 - Redis is optional. Introduce only after measurement for a justified non-authoritative use. Never use Redis locks, cached availability, or Redis-only idempotency as the correctness boundary.
 - Keep one service plus a small event worker. No frontend, Kubernetes, external payment gateway or premature microservices.
+- Do not auto commit anything, Nabeel will review teh changes and commit himself
+- Do not write unit tests for this project now.
 
 ## Product decisions
 1. Reservations confirm immediately. Choose explicit owner-only cancellation, not expiring holds. API seat statuses are available or confirmed; held count remains zero.
