@@ -13,7 +13,7 @@ const pool = createPool(config);
 
 // Composition root: repository -> service -> controller -> routes.
 const showController = new ShowController(new ShowService(pool, new ShowRepository()));
-const app = createApp({ config, log, routes: (auth) => showRoutes(showController, auth.requireAdmin) });
+const app = createApp({ config, log, pool, routes: (auth) => showRoutes(showController, auth.requireAdmin) });
 const server = app.listen(config.PORT, () => log.info({ port: config.PORT }, 'listening'));
 
 // Graceful shutdown: stop accepting connections, let in-flight requests finish, close the pool, then exit.
