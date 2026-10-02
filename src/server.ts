@@ -1,17 +1,32 @@
 import { createApp } from './app';
 import { loadConfig } from './config';
+import { createPool } from './db/pool';
 import { createLogger } from './logger';
+import { ShowController } from './shows/show.controller';
+import { ShowRepository } from './shows/show.repository';
+import { showRoutes } from './shows/show.routes';
+import { ShowService } from './shows/show.service';
 
 const config = loadConfig();
 const log = createLogger(config.LOG_LEVEL);
-const server = createApp().listen(config.PORT, () => log.info({ port: config.PORT }, 'listening'));
+const pool = createPool(config);
 
-// Graceful shutdown: stop accepting connections, let in-flight requests finish, then exit.
+// Composition root: repository -> service -> controller -> routes.
+const showController = new ShowController(new ShowService(pool, new ShowRepository()));
+const app = createApp({ config, log, routes: (auth) => showRoutes(showController, auth.requireAdmin) });
+const server = app.listen(config.PORT, () => log.info({ port: config.PORT }, 'listening'));
+
+// Graceful shutdown: stop accepting connections, let in-flight requests finish, close the pool, then exit.
 function shutdown(signal: string) {
   log.info({ signal }, 'shutting down');
   const timer = setTimeout(() => process.exit(1), config.SHUTDOWN_GRACE_MS);
   timer.unref();
-  server.close(() => process.exit(0));
+  server.close(() => {
+    pool.end().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
+  });
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));

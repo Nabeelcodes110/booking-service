@@ -16,6 +16,7 @@
     "lint": "eslint .",
     "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
     "start": "node dist/server.js",
+    "token": "tsx --env-file-if-exists=.env src/cli/token.ts",
     "migrate": "node --env-file-if-exists=.env dist/db/migrate.js",
     "migrate:dev": "tsx --env-file-if-exists=.env src/db/migrate.ts",
     "test": "vitest run"

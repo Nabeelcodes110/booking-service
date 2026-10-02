@@ -15,7 +15,7 @@ Source of truth for behaviour is `CLAUDE.md`; this file pins the wire contract s
 
 `price_paise`: integer, `1 <= n <= 1_000_000_000` (public, safe). `amount_paise = price_paise * seats.length` must be `<= Number.MAX_SAFE_INTEGER`; otherwise 400. Rejected: floats, strings, negatives, zero, NaN/Infinity. Money columns are `bigint`; they are parsed from SQL strings and range-checked, never implicitly converted.
 
-Other limits: seats per show <= 10000, seats per reserve request <= 10, seat label 1-32 chars `[A-Za-z0-9_-]`, show name 1-200 chars, `idempotency_key` 1-128 chars `[A-Za-z0-9._:-]`, `per_user_limit` 1-100, JSON body <= 64 KB (larger -> 413 `payload_too_large`).
+Other limits: seats per show <= 10000, seats per reserve request <= 10, seat label 1-32 chars `[A-Za-z0-9_-]`, show name 1-200 chars, `idempotency_key` 1-128 chars `[A-Za-z0-9._:-]`, `per_user_limit` 1-100, JSON body <= 64 KB, except `POST /shows` which allows 1 MB (larger -> 413 `payload_too_large`).
 
 ## Auth
 
@@ -38,7 +38,7 @@ Other limits: seats per show <= 10000, seats per reserve request <= 10, seat lab
 | 409 | `seat_taken` | Any requested seat occupied or not on the show |
 | 409 | `per_user_limit` | `active_count + requested > limit` |
 | 409 | `idempotency_conflict` | Same user+show+key, different canonical body |
-| 413 | `payload_too_large` | Body > 64 KB |
+| 413 | `payload_too_large` | Body over the limit (64 KB; 1 MB for `POST /shows`) |
 | 500 | `internal_error` | Unexpected failure (never raw SQL text) |
 | 503 | `unavailable` | DB unreachable / pool timeout / shutting down (fail closed) |
 
