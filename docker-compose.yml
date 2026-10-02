@@ -1,0 +1,84 @@
+# Local/reproducible stack: PostgreSQL (system of record), RabbitMQ, a one-shot migration job, and the API.
+# Secrets are read from the environment / an untracked .env (see .env.example); none are hardcoded here.
+# Start: cp .env.example .env  (edit the CHANGE_ME values)  &&  docker compose up --build --wait
+name: booking-service
+
+x-app: &app
+  build: .
+  image: booking-service:local
+  environment: &app-env
+    NODE_ENV: production
+    PORT: "3000"
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Built from the same variables that initialise PostgreSQL; use a URL-safe POSTGRES_PASSWORD.
+    DATABASE_URL: postgres://${POSTGRES_USER:-booking}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-booking}
+    DB_POOL_MAX: ${DB_POOL_MAX:-20}
+    DB_STATEMENT_TIMEOUT_MS: ${DB_STATEMENT_TIMEOUT_MS:-5000}
+    JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET (>=32 chars) in .env}
+    JWT_ISSUER: ${JWT_ISSUER:-booking-service}
+    JWT_AUDIENCE: ${JWT_AUDIENCE:-booking-api}
+    AMQP_URL: amqp://${RABBITMQ_USER:-booking}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}@rabbitmq:5672
+    SHUTDOWN_GRACE_MS: ${SHUTDOWN_GRACE_MS:-10000}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-booking}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-booking}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-booking}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD in .env}
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  # One-shot, forward-only migrations (never drops or seeds data). The API starts only after it succeeds.
+  migrate:
+    <<: *app
+    command: ["node", "dist/db/migrate.js"]
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    init: true
+    # Longer than SHUTDOWN_GRACE_MS so Docker does not SIGKILL while in-flight requests drain.
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  rabbitmqdata:
