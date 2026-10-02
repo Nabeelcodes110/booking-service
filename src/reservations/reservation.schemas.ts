@@ -23,6 +23,7 @@ export const reserveBody = z.object({
 });
 
 export const reserveParams = z.object({ id: z.uuid() });
+export const cancelParams = z.object({ id: z.uuid() });
 
 /** Stable sorted order (plain code-unit order == COLLATE "C" for our ASCII labels). */
 export function canonicalSeats(seats: readonly string[]): string[] {

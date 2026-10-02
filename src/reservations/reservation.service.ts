@@ -28,6 +28,14 @@ const DECLINE_MESSAGES = {
   per_user_limit: 'Per-user seat limit for this show would be exceeded',
 } as const;
 
+export interface CancelResult {
+  reservation_id: string;
+  show_id: string;
+  status: 'cancelled';
+  /** True when this call was a repeat (no state change). Not part of the HTTP body. */
+  alreadyCancelled: boolean;
+}
+
 export interface ReserveInput {
   userId: string;
   showId: string;
@@ -108,6 +116,49 @@ export class ReservationService {
         };
         await this.repo.saveOutcome(db, { userId, showId, key, statusCode: 201, response: body, reservationId });
         return { kind: 'confirmed', status: 201, body, replayed: false };
+      },
+      this.hooks.onRetry ? { onRetry: this.hooks.onRetry } : {},
+    );
+  }
+
+  /**
+   * Owner-only cancellation. Same lock order as reserve, minus the idempotency claim:
+   * owner's quota row -> seat rows ascending -> reservation state update.
+   * (Reservation rows are never locked before the quota row, so cancel and reserve cannot deadlock.)
+   *
+   * Repeating a cancel is a successful no-op: the lifecycle is re-read under the quota lock, and an already
+   * cancelled reservation returns before touching seats or quota. That is also why a stale cancel can never
+   * clear seats that were rebooked under a new reservation.
+   */
+  async cancel(input: { userId: string; reservationId: string }): Promise<CancelResult> {
+    return withTransaction(
+      this.pool,
+      async (db): Promise<CancelResult> => {
+        // Immutable facts, read without a lock only to learn who owns it and which quota row to lock.
+        const found = await this.repo.findReservation(db, input.reservationId);
+        if (!found) throw new AppError(404, 'not_found', 'Reservation not found');
+        if (found.user_id !== input.userId) throw new AppError(403, 'forbidden', 'Only the reservation owner can cancel it');
+        const result = { reservation_id: found.id, show_id: found.show_id, status: 'cancelled' as const };
+
+        // Step 1: quota lock first (serializes this user's reserve/cancel calls for the show).
+        await this.repo.lockUserQuota(db, found.user_id, found.show_id);
+
+        // Step 2: re-read lifecycle under the lock. Already cancelled -> idempotent success, nothing changes.
+        const status = await this.repo.findStatus(db, found.id);
+        if (status === 'cancelled') return { ...result, alreadyCancelled: true };
+        if (status !== 'confirmed') throw new AppError(404, 'not_found', 'Reservation not found');
+
+        // Step 3: lock the reservation's seats ascending, then transition once.
+        await this.repo.lockSeats(db, found.show_id, found.seats);
+        if (!(await this.repo.markCancelled(db, found.id))) throw new Error('reservation was not confirmed under lock');
+
+        // Step 4: clear only seats still owned by THIS reservation; first cancellation must find all of them.
+        const released = await this.repo.releaseSeats(db, found.show_id, found.seats, found.id);
+        if (released !== found.seats.length) {
+          throw new Error(`cancel released ${released} seats, expected ${found.seats.length}`); // rolls back
+        }
+        await this.repo.subtractFromQuota(db, found.user_id, found.show_id, found.seats.length);
+        return { ...result, alreadyCancelled: false };
       },
       this.hooks.onRetry ? { onRetry: this.hooks.onRetry } : {},
     );
