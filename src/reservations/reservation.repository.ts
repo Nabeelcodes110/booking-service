@@ -7,6 +7,14 @@ export interface StoredOutcome {
   response: Record<string, unknown>;
 }
 
+export interface ReservationRow {
+  id: string;
+  show_id: string;
+  user_id: string;
+  seats: string[];
+  status: 'confirmed' | 'cancelled';
+}
+
 export interface SeatLockRow {
   seat_id: string;
   reservation_id: string | null;
@@ -14,7 +22,7 @@ export interface SeatLockRow {
 
 /**
  * SQL only. Every method takes the caller's transaction client; the service owns BEGIN/COMMIT and the
- * lock order: idempotency claim -> user quota row -> seat rows ascending.
+ * lock order: idempotency claim -> user quota row -> seat rows ascending (cancel: quota -> seats -> reservation).
  */
 export class ReservationRepository {
   /** Immutable show configuration. No lock needed: shows are never updated (trigger-enforced). */
@@ -122,6 +130,53 @@ export class ReservationRepository {
           SET status_code = $4, response = $5, reservation_id = $6
         WHERE user_id = $1 AND show_id = $2 AND key = $3`,
       [o.userId, o.showId, o.key, o.statusCode, JSON.stringify(o.response), o.reservationId],
+    );
+  }
+
+  /** Immutable facts (owner, show, seats) plus the current status. Unlocked: only used to pick the quota lock. */
+  async findReservation(db: PoolClient, reservationId: string): Promise<ReservationRow | null> {
+    const { rows } = await db.query<ReservationRow>(
+      'SELECT id, show_id, user_id, seats, status FROM reservations WHERE id = $1',
+      [reservationId],
+    );
+    return rows[0] ?? null;
+  }
+
+  /** Lifecycle re-read. Called only while holding the owner's quota lock, which serializes cancels of this reservation. */
+  async findStatus(db: PoolClient, reservationId: string): Promise<'confirmed' | 'cancelled' | null> {
+    const { rows } = await db.query<{ status: 'confirmed' | 'cancelled' }>(
+      'SELECT status FROM reservations WHERE id = $1',
+      [reservationId],
+    );
+    return rows[0]?.status ?? null;
+  }
+
+  /** confirmed -> cancelled exactly once; returns false if it was not confirmed. */
+  async markCancelled(db: PoolClient, reservationId: string): Promise<boolean> {
+    const res = await db.query(
+      "UPDATE reservations SET status = 'cancelled', cancelled_at = now() WHERE id = $1 AND status = 'confirmed'",
+      [reservationId],
+    );
+    return res.rowCount === 1;
+  }
+
+  /**
+   * Free seats ONLY where they still point at this reservation. A stale cancel can therefore never clear a
+   * seat that has since been rebooked under a different reservation.
+   */
+  async releaseSeats(db: PoolClient, showId: string, seatIds: string[], reservationId: string): Promise<number> {
+    const res = await db.query(
+      `UPDATE show_seats SET reservation_id = NULL
+        WHERE show_id = $1 AND seat_id = ANY($2::text[]) AND reservation_id = $3`,
+      [showId, seatIds, reservationId],
+    );
+    return res.rowCount ?? 0;
+  }
+
+  async subtractFromQuota(db: PoolClient, userId: string, showId: string, seatCount: number): Promise<void> {
+    await db.query(
+      'UPDATE user_show_usage SET active_count = active_count - $3 WHERE show_id = $1 AND user_id = $2',
+      [showId, userId, seatCount],
     );
   }
 }

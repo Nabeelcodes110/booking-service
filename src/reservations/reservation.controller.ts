@@ -1,7 +1,7 @@
 import type { RequestHandler, Response } from 'express';
 import { AppError } from '../errors';
 import { parseOrThrow } from '../validation';
-import { idempotencyKey, reserveBody, reserveParams } from './reservation.schemas';
+import { cancelParams, idempotencyKey, reserveBody, reserveParams } from './reservation.schemas';
 import type { ReservationService, ReserveResult } from './reservation.service';
 
 /** Thin HTTP layer: validate, call the service, map the result to status/headers/body. */
@@ -19,6 +19,16 @@ export class ReservationController {
 
     const result = await this.service.reserve({ userId, showId, idempotencyKey: key, seats: body.seats });
     sendResult(res, result);
+  };
+
+  cancel: RequestHandler = async (req, res) => {
+    const { id: reservationId } = parseOrThrow(cancelParams, req.params);
+    const userId = req.auth?.userId;
+    if (!userId) throw new AppError(401, 'unauthorized', 'Authentication required');
+
+    const { reservation_id, show_id, status } = await this.service.cancel({ userId, reservationId });
+    // 200 for the first cancellation and for every repeat; the body never reveals which one it was.
+    res.status(200).json({ reservation_id, show_id, status });
   };
 }
 
