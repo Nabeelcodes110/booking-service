@@ -22,6 +22,21 @@ export const notFoundHandler: RequestHandler = (_req, res) => {
   sendError(res, 404, 'not_found', 'Route not found');
 };
 
+const NETWORK_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EPIPE']);
+// 57014 query_canceled (statement timeout), 53300 too_many_connections, 57P01-03 admin/crash/cannot_connect_now
+const PG_UNAVAILABLE_CODES = new Set(['57014', '53300', '57P01', '57P02', '57P03']);
+
+/** Connection failures, pool wait timeouts and statement timeouts: infrastructure trouble, not a domain outcome. */
+export function isDbUnavailable(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null) return false;
+  const { code, message } = err as { code?: string; message?: string };
+  if (code && (NETWORK_CODES.has(code) || PG_UNAVAILABLE_CODES.has(code) || code.startsWith('08'))) return true;
+  return (
+    typeof message === 'string' &&
+    /timeout exceeded when trying to connect|Connection terminated|Client has encountered a connection error/i.test(message)
+  );
+}
+
 /** Single place that turns thrown errors into the stable envelope. Never leaks SQL or stack text. */
 export function errorHandler(log: Logger): ErrorRequestHandler {
   return (err: unknown, _req, res, next) => {
@@ -40,6 +55,12 @@ export function errorHandler(log: Logger): ErrorRequestHandler {
     }
     if (type === 'entity.parse.failed' || type === 'encoding.unsupported' || type === 'charset.unsupported') {
       sendError(res, 400, 'validation_error', 'Request body is not valid JSON');
+      return;
+    }
+    if (isDbUnavailable(err)) {
+      // Fail closed and honestly: an outage or pool exhaustion is a 503, never a seat_taken decline.
+      log.error({ err, request_id: res.locals.requestId }, 'database unavailable');
+      sendError(res, 503, 'unavailable', 'Service temporarily unavailable');
       return;
     }
     log.error({ err, request_id: res.locals.requestId }, 'unhandled error');
