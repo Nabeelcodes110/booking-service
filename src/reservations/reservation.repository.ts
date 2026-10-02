@@ -124,14 +124,4 @@ export class ReservationRepository {
       [o.userId, o.showId, o.key, o.statusCode, JSON.stringify(o.response), o.reservationId],
     );
   }
-
-  async insertOutbox(
-    db: PoolClient,
-    e: { eventType: 'reservation.confirmed' | 'reservation.cancelled'; reservationId: string; payload: object },
-  ): Promise<void> {
-    await db.query(
-      'INSERT INTO outbox (event_type, aggregate_id, payload) VALUES ($1, $2, $3)',
-      [e.eventType, e.reservationId, JSON.stringify(e.payload)],
-    );
-  }
 }

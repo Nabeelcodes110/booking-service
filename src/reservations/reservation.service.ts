@@ -44,8 +44,7 @@ export class ReservationService {
 
   /**
    * One PostgreSQL transaction on one client. Lock order (also used by cancel): idempotency claim -> this
-   * user's quota row -> requested seat rows ascending. Nothing here calls the network; RabbitMQ only sees
-   * the outbox row after COMMIT.
+   * user's quota row -> requested seat rows ascending. Nothing here calls the network.
    *
    * Deadlock/serialization failures re-run this whole function (bounded, see withTransaction). If the
    * client never sees the response (crash, timeout), it retries the SAME idempotency key and gets the
@@ -108,11 +107,6 @@ export class ReservationService {
           status: 'confirmed',
         };
         await this.repo.saveOutcome(db, { userId, showId, key, statusCode: 201, response: body, reservationId });
-        await this.repo.insertOutbox(db, {
-          eventType: 'reservation.confirmed',
-          reservationId,
-          payload: { ...body, occurred_at: new Date().toISOString() },
-        });
         return { kind: 'confirmed', status: 201, body, replayed: false };
       },
       this.hooks.onRetry ? { onRetry: this.hooks.onRetry } : {},
