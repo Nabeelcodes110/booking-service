@@ -22,6 +22,7 @@ const reservationController = new ReservationController(new ReservationService(p
 const app = createApp({
   config,
   log,
+  pool,
   routes: (auth) =>
     Router()
       .use(showRoutes(showController, auth.requireAdmin))
