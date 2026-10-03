@@ -74,22 +74,6 @@ CREATE TABLE idempotency_requests (
   CHECK ((status_code IS NULL) = (response IS NULL))
 );
 
--- Transactional outbox: a row is inserted in the SAME transaction as the booking/cancellation, so an event
--- exists if and only if the state change committed. A separate publisher sends pending rows to RabbitMQ.
-CREATE TABLE outbox (
-  id            bigserial PRIMARY KEY,                       -- publish order
-  event_id      uuid NOT NULL UNIQUE DEFAULT gen_random_uuid(), -- identity consumers use to deduplicate
-  event_type    text NOT NULL CHECK (event_type IN ('reservation.confirmed', 'reservation.cancelled')),
-  aggregate_id  uuid NOT NULL,                               -- the reservation id
-  payload       jsonb NOT NULL,
-  created_at    timestamptz NOT NULL DEFAULT now(),
-  dispatched_at timestamptz,                                 -- set only after the broker confirmed the publish
-  attempts      integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
-  last_error    text
-);
--- Partial index: only unpublished rows are indexed, so "find the backlog" and "oldest pending age" stay fast.
-CREATE INDEX outbox_pending_idx ON outbox (id) WHERE dispatched_at IS NULL;
-
 -- Consumer-side deduplication: the consumer inserts (consumer, event_id) in the same transaction as its own
 -- effect. A duplicate delivery hits the primary key and is skipped, so the effect happens once.
 CREATE TABLE processed_events (
@@ -103,7 +87,6 @@ CREATE TABLE processed_events (
 -- Why triggers: CHECK constraints can only look at the new row, not compare it with the old one. A trigger
 -- sees both OLD and NEW, so it can say "this column may not change". Doing it in the database means no code
 -- path (a future endpoint, a script, a manual UPDATE) can silently rewrite the price, owner, seats or amount
--- that earlier replayed responses and outbox events promised.
 
 -- A trigger function runs automatically before each UPDATE (see CREATE TRIGGER below it) and either raises
 -- an error (the UPDATE fails) or returns NEW (the UPDATE proceeds).
